@@ -1,42 +1,64 @@
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+margin: 0;
+background: #f6f8fb; /* subtle light grey */
+color: #0f172a; /* slate-900 */
+font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+-webkit-font-smoothing: antialiased;
+-moz-osx-font-smoothing: grayscale;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+.container { padding: 24px; max-width: 1200px; margin: 0 auto; }
+
+.header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 12px;
+margin-bottom: 16px;
+}
+
+.charts { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 920px) { .charts { grid-template-columns: 1fr 1fr; } }
+
+.card {
+background: #ffffff;
+border: 1px solid #e5e7eb; /* light border */
+border-radius: 12px;
+padding: 16px;
+box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06); /* soft elevation */
+}
+
+.small { color: #64748b; font-size: 12px; }
+
+/* Link styling */
+a { color: #1677ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Optional: tighten Ant Design card body padding when nested in our .card */
+.card .ant-card-body { padding: 0; }
+
+/* FOUC guard: hide until hydrated (keeps layout but prevents flash) */
+body,
+.body {
+  visibility: hidden;
+  background: #fff;              /* avoids dark blink */
+}
+
+/* Show once React mounts */
+body.hydrated,
+.body.hydrated {
+  visibility: visible;
+}
+
+/* Optional: gentle fade-in (skips for reduced motion) */
+@media (prefers-reduced-motion: no-preference) {
+  body.hydrated,
+  .body.hydrated {
+    animation: fadeIn 120ms ease-in;
   }
 }
-
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
-}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
