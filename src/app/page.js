@@ -19,11 +19,11 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, T
 // ── BLE UUIDs ────────────────────────────────────────────────────────────────
 const DEVICE_NAME_SUBSTR = "HRPC";
 const AFE_SERVICE_UUID = "12345678-1234-5678-1234-56789abc0000";
-const AFE_CHAR_UUID    = "12345678-1234-5678-1234-56789abc0001";
+const AFE_CHAR_UUID = "12345678-1234-5678-1234-56789abc0001";
 const IMU_SERVICE_UUID = "12345678-1234-5678-1234-56789abc1000";
-const IMU_CHAR_UUID    = "12345678-1234-5678-1234-56789abc1001";
+const IMU_CHAR_UUID = "12345678-1234-5678-1234-56789abc1001";
 const TMP_SERVICE_UUID = "12345678-1234-5678-1234-56789abc2000";
-const TMP_CHAR_UUID    = "12345678-1234-5678-1234-56789abc2001";
+const TMP_CHAR_UUID = "12345678-1234-5678-1234-56789abc2001";
 
 // ── Packet formats ──────────────────────────────────────────────────────────
 const HISTORY = 1280;
@@ -60,8 +60,9 @@ export default function Page() {
   // Data buffers
   const ppg = useRef(Array.from({ length: PPG_CHANNELS }, () => makeBuffer(HISTORY)));
   const accel = useRef([makeBuffer(HISTORY), makeBuffer(HISTORY), makeBuffer(HISTORY)]);
-  const gyro  = useRef([makeBuffer(HISTORY), makeBuffer(HISTORY), makeBuffer(HISTORY)]);
-  const temp  = useRef(makeBuffer(HISTORY));
+  const gyro = useRef([makeBuffer(HISTORY), makeBuffer(HISTORY), makeBuffer(HISTORY)]);
+  const temp = useRef([]);
+  const tempTimes = useRef([]);
   const [latestTemp, setLatestTemp] = useState(null);
 
   useEffect(() => {
@@ -73,10 +74,10 @@ export default function Page() {
   const [ppgSelected, setPpgSelected] = useState([0]);
 
   // Chart refs (imperative updates, no React "tick")
-  const ppgChartRef  = useRef(null);
-  const accChartRef  = useRef(null);
+  const ppgChartRef = useRef(null);
+  const accChartRef = useRef(null);
   const gyroChartRef = useRef(null);
-  const tmpChartRef  = useRef(null);
+  const tmpChartRef = useRef(null);
 
   // ── Decoders ───────────────────────────────────────────────────────────────
   function decodeAFE(dataView) {
@@ -96,7 +97,6 @@ export default function Page() {
   }
 
   function decodeIMU(dataView) {
-    console.log("IMU data coming in: ", dataView);
     if (dataView.byteLength < 8) return;
     let offset = 8;
     while (offset + 12 <= dataView.byteLength) {
@@ -122,8 +122,18 @@ export default function Page() {
     if (dataView.byteLength < 10) return;
     const cNum = Number(`${dataView.getUint8(8)}.${dataView.getUint8(9)}`);
     const t = temp.current;
+    const tt = tempTimes.current;
+    const now = Date.now();
+
     t.push(cNum);
-    if (t.length > HISTORY) t.shift();
+    tt.push(now);
+
+    // Prune entries older than 10 seconds
+    while (tt.length > 0 && now - tt[0] > 10000) {
+      t.shift();
+      tt.shift();
+    }
+
     setLatestTemp(cNum);
     tmpChartRef.current?.update("none");
   }
@@ -171,6 +181,17 @@ export default function Page() {
 
       setConnected(true);
       message.success("Device connected");
+    } catch (err) {
+      console.error(err);
+      message.error(String(err?.message || err));
+    }
+  }
+
+  async function disconnectDevice() {
+    try {
+      if (deviceRef.current && deviceRef.current.gatt.connected) {
+        deviceRef.current.gatt.disconnect();
+      }
     } catch (err) {
       console.error(err);
       message.error(String(err?.message || err));
@@ -335,10 +356,10 @@ export default function Page() {
     [ppgSelected]
   );
 
-  const ppgData  = { labels, datasets: ppgDatasets };
+  const ppgData = { labels, datasets: ppgDatasets };
   const accelData = {
     labels,
-    datasets: ["ax","ay","az"].map((k, i) => ({
+    datasets: ["ax", "ay", "az"].map((k, i) => ({
       label: k,
       data: accel.current[i],
       borderWidth: 1.5,
@@ -350,7 +371,7 @@ export default function Page() {
   };
   const gyroData = {
     labels,
-    datasets: ["gx","gy","gz"].map((k, i) => ({
+    datasets: ["gx", "gy", "gz"].map((k, i) => ({
       label: k,
       data: gyro.current[i],
       borderWidth: 1.5,
@@ -361,17 +382,22 @@ export default function Page() {
     })),
   };
   const tempData = {
-    labels,
-    datasets: [{
-      label: "°C",
-      data: temp.current,
-      borderWidth: 1.8,
-      pointRadius: 0,
-      tension: 0.12,
-      fill: true,
-      borderColor: "#f59e0b",
-      backgroundColor: "rgba(245,158,11,0.10)",
-    }]
+    labels: tempTimes.current.map((t) => {
+      const latest = tempTimes.current[tempTimes.current.length - 1] || Date.now();
+      return ((t - latest) / 1000).toFixed(1) + "s";
+    }),
+    datasets: [
+      {
+        label: "°C",
+        data: temp.current,
+        borderWidth: 1.8,
+        pointRadius: 0,
+        tension: 0.12,
+        fill: true,
+        borderColor: "#f59e0b",
+        backgroundColor: "rgba(245,158,11,0.10)",
+      },
+    ],
   };
 
   const commonOptions = {
@@ -390,18 +416,22 @@ export default function Page() {
     () => PPG_NAMES.map((name, idx) => ({ label: name, value: idx })),
     []
   );
-  const selectAll = () => setPpgSelected([0,1,2,3]);
+  const selectAll = () => setPpgSelected([0, 1, 2, 3]);
   const selectNone = () => setPpgSelected([]);
 
   return (
     <div className="container">
       <div className="header">
-        <Typography.Title level={3} style={{margin:0}}>
+        <Typography.Title level={3} style={{ margin: 0 }}>
           HRPC Real-Time Sensor Visualization
         </Typography.Title>
         <Space>
-          <Button type="primary" onClick={connectDevice} disabled={connected}>
-            Connect Device
+          <Button
+            type={connected ? "default" : "primary"}
+            danger={connected}
+            onClick={connected ? disconnectDevice : connectDevice}
+          >
+            {connected ? "Disconnect Device" : "Connect Device"}
           </Button>
           <Divider type="vertical" />
           {/* Toggle buttons per stream */}
@@ -443,7 +473,7 @@ export default function Page() {
         )}
       </Space>
 
-      <div className="charts" style={{marginTop:16}}>
+      <div className="charts" style={{ marginTop: 16 }}>
         <Card
           className="card"
           title="PPG (toggle channels)"
@@ -463,25 +493,25 @@ export default function Page() {
               <Button size="small" onClick={selectNone}>None</Button>
             </Space>
           }
-          bodyStyle={{height:340}}
+          bodyStyle={{ height: 340 }}
         >
-          <Line ref={ppgChartRef} data={ppgData} options={{...commonOptions}} />
+          <Line ref={ppgChartRef} data={ppgData} options={{ ...commonOptions }} />
         </Card>
 
-        <Card className="card" title="Accelerometer (raw)" bodyStyle={{height:340}}>
-          <Line ref={accChartRef} data={accelData} options={{...commonOptions}} />
+        <Card className="card" title="Accelerometer (raw)" bodyStyle={{ height: 340 }}>
+          <Line ref={accChartRef} data={accelData} options={{ ...commonOptions }} />
         </Card>
 
-        <Card className="card" title="Gyroscope (raw)" bodyStyle={{height:340}}>
-          <Line ref={gyroChartRef} data={gyroData} options={{...commonOptions}} />
+        <Card className="card" title="Gyroscope (raw)" bodyStyle={{ height: 340 }}>
+          <Line ref={gyroChartRef} data={gyroData} options={{ ...commonOptions }} />
         </Card>
 
-        <Card className="card" title="Temperature (°C)" bodyStyle={{height:340}}>
-          <Line ref={tmpChartRef} data={tempData} options={{...commonOptions}} />
+        <Card className="card" title="Temperature (°C)" bodyStyle={{ height: 340 }}>
+          <Line ref={tmpChartRef} data={tempData} options={{ ...commonOptions }} />
         </Card>
       </div>
 
-      <Flex vertical gap={8} style={{marginTop:16}}>
+      <Flex vertical gap={8} style={{ marginTop: 16 }}>
         <Typography.Paragraph className="small">
           Connect once, then toggle per-stream notifications. Charts update automatically as data arrives.
         </Typography.Paragraph>
