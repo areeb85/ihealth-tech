@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useEffect } from "react";
-import { Button, Card, Flex, Space, Tag, message, Typography, Divider, Select } from "antd";
+import { Button, Card, Flex, Space, Tag, notification, Typography, Divider, Select } from "antd";
 import { Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -24,6 +24,12 @@ const IMU_SERVICE_UUID = "12345678-1234-5678-1234-56789abc1000";
 const IMU_CHAR_UUID = "12345678-1234-5678-1234-56789abc1001";
 const TMP_SERVICE_UUID = "12345678-1234-5678-1234-56789abc2000";
 const TMP_CHAR_UUID = "12345678-1234-5678-1234-56789abc2001";
+const BAT_SERVICE_UUID = "12345678-1234-5678-1234-56789abc3000";
+const BAT_CHAR_UUID = "12345678-1234-5678-1234-56789abc3001";
+const HFS_SERVICE_UUID = "12345678-1234-5678-1234-56789abc4000";
+const HFS_CHAR_UUID = "12345678-1234-5678-1234-56789abc4001";
+
+
 
 // ── Packet formats ──────────────────────────────────────────────────────────
 const HISTORY = 1280;
@@ -46,16 +52,22 @@ export default function Page() {
   const afeCharRef = useRef(null);
   const imuCharRef = useRef(null);
   const tmpCharRef = useRef(null);
+  const batCharRef = useRef(null);
+  const hfsCharRef = useRef(null);
 
   // Notification handler refs (so we can remove them cleanly)
   const afeHandlerRef = useRef(null);
   const imuHandlerRef = useRef(null);
   const tmpHandlerRef = useRef(null);
+  const batHandlerRef = useRef(null);
+  const hfsHandlerRef = useRef(null);
 
   // Subscription states
   const [afeOn, setAfeOn] = useState(false);
   const [imuOn, setImuOn] = useState(false);
   const [tmpOn, setTmpOn] = useState(false);
+  const [batOn, setBatOn] = useState(false);
+  const [hfsOn, setHfsOn] = useState(false);
 
   // Data buffers
   const ppg = useRef(Array.from({ length: PPG_CHANNELS }, () => makeBuffer(HISTORY)));
@@ -65,8 +77,21 @@ export default function Page() {
   const tempTimes = useRef([]);
   const [latestTemp, setLatestTemp] = useState(null);
 
+  const bat = useRef([]);
+  const batTimes = useRef([]);
+  const [latestBat, setLatestBat] = useState(null);
+
+  const hfs = useRef([]);
+  const hfsTimes = useRef([]);
+  const [latestHfs, setLatestHfs] = useState(null);
+
   useEffect(() => {
     document.body.classList.add("hydrated");
+    notification.config({
+      placement: "bottomRight",
+      duration: 2,
+      maxCount: 2,
+    });
     return () => document.body.classList.remove("hydrated");
   }, []);
 
@@ -78,6 +103,8 @@ export default function Page() {
   const accChartRef = useRef(null);
   const gyroChartRef = useRef(null);
   const tmpChartRef = useRef(null);
+  const batChartRef = useRef(null);
+  const hfsChartRef = useRef(null);
 
   // ── Decoders ───────────────────────────────────────────────────────────────
   function decodeAFE(dataView) {
@@ -98,14 +125,25 @@ export default function Page() {
 
   function decodeIMU(dataView) {
     if (dataView.byteLength < 8) return;
+
     let offset = 8;
+
+    // The device sends interleaved data: each 6-byte chunk is either accel OR gyro
+    // Pattern: accel, gyro, accel, gyro, ...
+    // We read them in pairs and only push when we have both
+
     while (offset + 12 <= dataView.byteLength) {
+      // First 6 bytes: accelerometer data
       const ax = dataView.getInt16(offset, true); offset += 2;
       const ay = dataView.getInt16(offset, true); offset += 2;
       const az = dataView.getInt16(offset, true); offset += 2;
+
+      // Next 6 bytes: gyroscope data
       const gx = dataView.getInt16(offset, true); offset += 2;
       const gy = dataView.getInt16(offset, true); offset += 2;
       const gz = dataView.getInt16(offset, true); offset += 2;
+
+      // Now push both accel and gyro data together
       const a = accel.current, g = gyro.current;
       a[0].push(ax); if (a[0].length > HISTORY) a[0].shift();
       a[1].push(ay); if (a[1].length > HISTORY) a[1].shift();
@@ -114,6 +152,7 @@ export default function Page() {
       g[1].push(gy); if (g[1].length > HISTORY) g[1].shift();
       g[2].push(gz); if (g[2].length > HISTORY) g[2].shift();
     }
+
     accChartRef.current?.update("none");
     gyroChartRef.current?.update("none");
   }
@@ -121,6 +160,7 @@ export default function Page() {
   function decodeTMP(dataView) {
     if (dataView.byteLength < 10) return;
     const cNum = Number(`${dataView.getUint8(8)}.${dataView.getUint8(9)}`);
+    if (cNum <= 0) return;
     const t = temp.current;
     const tt = tempTimes.current;
     const now = Date.now();
@@ -138,11 +178,51 @@ export default function Page() {
     tmpChartRef.current?.update("none");
   }
 
+  function decodeBAT(dataView) {
+    if (dataView.byteLength < 13) return;
+    const val = dataView.getUint8(12);
+    const b = bat.current;
+    const bt = batTimes.current;
+    const now = Date.now();
+
+    b.push(val);
+    bt.push(now);
+
+    while (bt.length > 0 && now - bt[0] > 10000) {
+      b.shift();
+      bt.shift();
+    }
+
+    setLatestBat(val);
+    batChartRef.current?.update("none");
+  }
+
+  function decodeHFS(dataView) {
+    if (dataView.byteLength < 12) return;
+    // Read 32-bit value from bytes 8-11
+    const val = dataView.getUint32(8, true); // little-endian
+    const h = hfs.current;
+    const ht = hfsTimes.current;
+    const now = Date.now();
+
+    h.push(val);
+    ht.push(now);
+
+    // Prune entries older than 10 seconds
+    while (ht.length > 0 && now - ht[0] > 10000) {
+      h.shift();
+      ht.shift();
+    }
+
+    setLatestHfs(val);
+    hfsChartRef.current?.update("none");
+  }
+
   // ── Connect once, then start/stop notifications per stream ────────────────
   async function connectDevice() {
     try {
       if (!navigator.bluetooth) {
-        message.error("Web Bluetooth not supported in this browser.");
+        notification.error({ message: "Web Bluetooth not supported in this browser." });
         return;
       }
 
@@ -150,12 +230,12 @@ export default function Page() {
       try {
         device = await navigator.bluetooth.requestDevice({
           filters: [{ namePrefix: DEVICE_NAME_SUBSTR }],
-          optionalServices: [AFE_SERVICE_UUID, IMU_SERVICE_UUID, TMP_SERVICE_UUID],
+          optionalServices: [AFE_SERVICE_UUID, IMU_SERVICE_UUID, TMP_SERVICE_UUID, BAT_SERVICE_UUID, HFS_SERVICE_UUID],
         });
       } catch (e) {
         device = await navigator.bluetooth.requestDevice({
           acceptAllDevices: true,
-          optionalServices: [AFE_SERVICE_UUID, IMU_SERVICE_UUID, TMP_SERVICE_UUID],
+          optionalServices: [AFE_SERVICE_UUID, IMU_SERVICE_UUID, TMP_SERVICE_UUID, BAT_SERVICE_UUID, HFS_SERVICE_UUID],
         });
       }
 
@@ -168,22 +248,28 @@ export default function Page() {
         setAfeOn(false);
         setImuOn(false);
         setTmpOn(false);
+        setBatOn(false);
+        setHfsOn(false);
 
         afeCharRef.current = null;
         imuCharRef.current = null;
         tmpCharRef.current = null;
+        batCharRef.current = null;
+        hfsCharRef.current = null;
         afeHandlerRef.current = null;
         imuHandlerRef.current = null;
         tmpHandlerRef.current = null;
+        batHandlerRef.current = null;
+        hfsHandlerRef.current = null;
 
-        message.warning("BLE device disconnected");
+        notification.warning({ message: "BLE device disconnected" });
       });
 
       setConnected(true);
-      message.success("Device connected");
+      notification.success({ message: "Device connected" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -194,7 +280,7 @@ export default function Page() {
       }
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -215,10 +301,10 @@ export default function Page() {
       }
       await ch.startNotifications();
       setAfeOn(true);
-      message.success("AFE notifications started");
+      notification.success({ message: "AFE notifications started" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -233,10 +319,10 @@ export default function Page() {
       }
       await ch.stopNotifications();
       setAfeOn(false);
-      message.info("AFE notifications stopped");
+      notification.info({ message: "AFE notifications stopped" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -257,10 +343,10 @@ export default function Page() {
       }
       await ch.startNotifications();
       setImuOn(true);
-      message.success("IMU notifications started");
+      notification.success({ message: "IMU notifications started" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -275,10 +361,10 @@ export default function Page() {
       }
       await ch.stopNotifications();
       setImuOn(false);
-      message.info("IMU notifications stopped");
+      notification.info({ message: "IMU notifications stopped" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -299,10 +385,10 @@ export default function Page() {
       }
       await ch.startNotifications();
       setTmpOn(true);
-      message.success("TMP notifications started");
+      notification.success({ message: "TMP notifications started" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -317,10 +403,100 @@ export default function Page() {
       }
       await ch.stopNotifications();
       setTmpOn(false);
-      message.info("TMP notifications stopped");
+      notification.info({ message: "TMP notifications stopped" });
     } catch (err) {
       console.error(err);
-      message.error(String(err?.message || err));
+      notification.error({ message: String(err?.message || err) });
+    }
+  }
+
+  // ── BAT Start/Stop ────────────────────────────────────────────────────────
+  async function startNotifyBAT() {
+    if (batOn) return;
+    try {
+      if (!serverRef.current) return;
+      if (!batCharRef.current) {
+        const svc = await serverRef.current.getPrimaryService(BAT_SERVICE_UUID);
+        batCharRef.current = await svc.getCharacteristic(BAT_CHAR_UUID);
+      }
+      const ch = batCharRef.current;
+      if (!batHandlerRef.current) {
+        const handler = (e) => {
+          const dv = e.target.value;
+          const mV = dv.byteLength >= 12 ? dv.getUint32(8, true) : null;
+          const pct = dv.byteLength >= 13 ? dv.getUint8(12) : null;
+          // console.log(`Battery Notification - Raw:`, dv, `mV:`, mV, `%:`, pct);
+          decodeBAT(dv);
+        };
+        batHandlerRef.current = handler;
+        ch.addEventListener("characteristicvaluechanged", handler);
+      }
+      await ch.startNotifications();
+      setBatOn(true);
+      notification.success({ message: "BAT notifications started" });
+    } catch (err) {
+      console.error(err);
+      notification.error({ message: String(err?.message || err) });
+    }
+  }
+
+  async function stopNotifyBAT() {
+    if (!batOn) return;
+    try {
+      const ch = batCharRef.current;
+      if (!ch) return;
+      if (batHandlerRef.current) {
+        ch.removeEventListener("characteristicvaluechanged", batHandlerRef.current);
+        batHandlerRef.current = null;
+      }
+      await ch.stopNotifications();
+      setBatOn(false);
+      notification.info({ message: "BAT notifications stopped" });
+    } catch (err) {
+      console.error(err);
+      notification.error({ message: String(err?.message || err) });
+    }
+  }
+
+  // ── HFS Start/Stop ────────────────────────────────────────────────────────
+  async function startNotifyHFS() {
+    if (hfsOn) return;
+    try {
+      if (!serverRef.current) return;
+      if (!hfsCharRef.current) {
+        const svc = await serverRef.current.getPrimaryService(HFS_SERVICE_UUID);
+        hfsCharRef.current = await svc.getCharacteristic(HFS_CHAR_UUID);
+      }
+      const ch = hfsCharRef.current;
+      if (!hfsHandlerRef.current) {
+        const handler = (e) => decodeHFS(e.target.value);
+        hfsHandlerRef.current = handler;
+        ch.addEventListener("characteristicvaluechanged", handler);
+      }
+      await ch.startNotifications();
+      setHfsOn(true);
+      notification.success({ message: "HFS notifications started" });
+    } catch (err) {
+      console.error(err);
+      notification.error({ message: String(err?.message || err) });
+    }
+  }
+
+  async function stopNotifyHFS() {
+    if (!hfsOn) return;
+    try {
+      const ch = hfsCharRef.current;
+      if (!ch) return;
+      if (hfsHandlerRef.current) {
+        ch.removeEventListener("characteristicvaluechanged", hfsHandlerRef.current);
+        hfsHandlerRef.current = null;
+      }
+      await ch.stopNotifications();
+      setHfsOn(false);
+      notification.info({ message: "HFS notifications stopped" });
+    } catch (err) {
+      console.error(err);
+      notification.error({ message: String(err?.message || err) });
     }
   }
 
@@ -399,6 +575,38 @@ export default function Page() {
       },
     ],
   };
+  const batData = {
+    labels: batTimes.current.map((t) => {
+      const latest = batTimes.current[batTimes.current.length - 1] || Date.now();
+      return ((t - latest) / 1000).toFixed(1) + "s";
+    }),
+    datasets: [{
+      label: "%",
+      data: bat.current,
+      borderWidth: 1.8,
+      pointRadius: 0,
+      tension: 0.12,
+      fill: true,
+      borderColor: "#10b981",
+      backgroundColor: "rgba(16,185,129,0.10)",
+    }]
+  };
+  const hfsData = {
+    labels: hfsTimes.current.map((t) => {
+      const latest = hfsTimes.current[hfsTimes.current.length - 1] || Date.now();
+      return ((t - latest) / 1000).toFixed(1) + "s";
+    }),
+    datasets: [{
+      label: "Val",
+      data: hfs.current,
+      borderWidth: 1.8,
+      pointRadius: 0,
+      tension: 0.12,
+      fill: true,
+      borderColor: "#8b5cf6",
+      backgroundColor: "rgba(139,92,246,0.10)",
+    }]
+  };
 
   const commonOptions = {
     responsive: true,
@@ -456,6 +664,20 @@ export default function Page() {
           >
             {tmpOn ? "Turn Off TMP" : "Turn On TMP"}
           </Button>
+          <Button
+            onClick={batOn ? stopNotifyBAT : startNotifyBAT}
+            disabled={!connected}
+            type={batOn ? "primary" : "default"}
+          >
+            {batOn ? "Turn Off BAT" : "Turn On BAT"}
+          </Button>
+          <Button
+            onClick={hfsOn ? stopNotifyHFS : startNotifyHFS}
+            disabled={!connected}
+            type={hfsOn ? "primary" : "default"}
+          >
+            {hfsOn ? "Turn Off HFS" : "Turn On HFS"}
+          </Button>
         </Space>
       </div>
 
@@ -466,9 +688,21 @@ export default function Page() {
         <Tag color={afeOn ? "green" : "default"}>AFE {afeOn ? "On" : "Off"}</Tag>
         <Tag color={imuOn ? "green" : "default"}>IMU {imuOn ? "On" : "Off"}</Tag>
         <Tag color={tmpOn ? "green" : "default"}>TMP {tmpOn ? "On" : "Off"}</Tag>
+        <Tag color={batOn ? "green" : "default"}>BAT {batOn ? "On" : "Off"}</Tag>
+        <Tag color={hfsOn ? "green" : "default"}>HFS {hfsOn ? "On" : "Off"}</Tag>
         {tmpOn && (
           <span className="small">
             Current Temp: {latestTemp?.toFixed?.(2) ?? "—"} °C
+          </span>
+        )}
+        {batOn && (
+          <span className="small">
+            Battery: {latestBat ?? "—"} %
+          </span>
+        )}
+        {hfsOn && (
+          <span className="small">
+            HFS: {latestHfs ?? "—"}
           </span>
         )}
       </Space>
@@ -481,7 +715,7 @@ export default function Page() {
             <Space size="small">
               <Select
                 size="small"
-                style={{ minWidth: 220 }}
+                style={{ minWidth: 100 }}
                 mode="multiple"
                 maxTagCount="responsive"
                 placeholder="Select PPG channels"
@@ -506,9 +740,18 @@ export default function Page() {
           <Line ref={gyroChartRef} data={gyroData} options={{ ...commonOptions }} />
         </Card>
 
+        <Card className="card" title="HFS " bodyStyle={{ height: 340 }}>
+          <Line ref={hfsChartRef} data={hfsData} options={{ ...commonOptions }} />
+        </Card>
+
         <Card className="card" title="Temperature (°C)" bodyStyle={{ height: 340 }}>
           <Line ref={tmpChartRef} data={tempData} options={{ ...commonOptions }} />
         </Card>
+
+        <Card className="card" title="Battery (%)" bodyStyle={{ height: 340 }}>
+          <Line ref={batChartRef} data={batData} options={{ ...commonOptions }} />
+        </Card>
+
       </div>
 
       <Flex vertical gap={8} style={{ marginTop: 16 }}>
