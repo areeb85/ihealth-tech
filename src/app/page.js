@@ -200,7 +200,7 @@ export default function Page() {
   function decodeHFS(dataView) {
     if (dataView.byteLength < 12) return;
     // Read 32-bit value from bytes 8-11
-    const val = dataView.getUint32(8, true); // little-endian
+    const val = dataView.getInt32(8, true); // little-endian
     const h = hfs.current;
     const ht = hfsTimes.current;
     const now = Date.now();
